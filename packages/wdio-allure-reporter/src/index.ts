@@ -177,39 +177,52 @@ class AllureReporter extends WDIOReporter {
     }
 
     onSuiteEnd(suite: SuiteStats) {
-        // cleanup suites index to prevent resource leaks
-        this._startedSuites = this._startedSuites.filter((suite) => suite.uid !== suite.uid)
+        if (!this._options.useCucumberStepReporter || suite.type !== 'scenario') {
+            const currentSuite = this._suites.get(suite.uid)!
 
-        if (this._options.useCucumberStepReporter && suite.type === 'scenario') {
-            // passing hooks are missing the 'state' property
-            suite.hooks = suite.hooks!.map((hook) => {
-                hook.state = hook.state ? hook.state : 'passed'
-                return hook
-            })
-            const suiteChildren = [...suite.tests!, ...suite.hooks]
-            const isPassed = !suiteChildren.some(item => item.state !== 'passed')
-            if (isPassed) {
-                return this._allure.endCase('passed')
-            }
-
-            // A scenario is it skipped if every steps are skipped and hooks are passed or skipped
-            const isSkipped = suite.tests.every(item => [SKIPPED].indexOf(item.state!) >= 0) && suite.hooks.every(item => [PASSED, SKIPPED].indexOf(item.state!) >= 0)
-            if (isSkipped) {
-                return this._allure.endCase(PENDING)
-            }
-
-            // A scenario is it passed if certain steps are passed and all other are skipped and every hooks are passed or skipped
-            const isPartiallySkipped = suiteChildren.every(item => [PASSED, SKIPPED].indexOf(item.state!) >= 0)
-            if (isPartiallySkipped) {
-                return this._allure.endCase('passed')
-            }
-
-            // Only close passing and skipped tests because
-            // failing tests are closed in onTestFailed event
+            currentSuite.endGroup()
             return
         }
 
-        this._allure.endSuite()
+        const currentTest = this._tests.get(suite.uid)!
+
+        // passing hooks are missing the 'state' property
+        suite.hooks = suite.hooks!.map((hook) => {
+            hook.state = hook.state || Status.PASSED
+
+            return hook
+        })
+
+        const suiteChildren = [...suite.tests!, ...suite.hooks]
+        const isPassed = !suiteChildren.some(item => item.state !== Status.PASSED)
+
+        if (isPassed) {
+            currentTest.status = Status.PASSED
+            currentTest.stage = Stage.FINISHED
+            currentTest.endTest()
+            return
+        }
+
+        // A scenario is it skipped if every steps are skipped and hooks are passed or skipped
+        // TODO: could hook be skipped?
+        const isSkipped = suite.tests.every(item => item.state === SKIPPED) && suite.hooks.every(item => item.state === PASSED)
+
+        if (isSkipped) {
+            currentTest.status = Status.SKIPPED
+            currentTest.stage = Stage.PENDING
+            currentTest.endTest()
+            return
+        }
+
+        // A scenario is it passed if certain steps are passed and all other are skipped and every hooks are passed or skipped
+        const isPartiallySkipped = suiteChildren.every(item => item.state === PASSED || item.state === SKIPPED)
+
+        if (isPartiallySkipped) {
+            currentTest.status = Status.PASSED
+            currentTest.stage = Stage.FINISHED
+            currentTest.endTest()
+            return
+        }
     }
 
     onTestStart(test: TestStats | HookStats) {
