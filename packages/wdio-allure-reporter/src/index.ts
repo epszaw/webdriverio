@@ -29,6 +29,10 @@ class AllureReporter extends WDIOReporter {
     private _addConsoleLogs: boolean
     private _startedSuites: SuiteStats[] = []
 
+    private _suites: Map<string, AllureGroup> = new Map()
+    private _test: Map<string, AllureTest> = new Map()
+    private _steps: Map<string, AllureStep> = new Map()
+
     constructor(options: AllureReporterOptions = {}) {
         const outputDir = options.outputDir || 'allure-results'
 
