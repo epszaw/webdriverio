@@ -4,7 +4,7 @@ import WDIOReporter, {
     AfterCommandArgs, CommandArgs, Argument
 } from '@wdio/reporter'
 import type { Capabilities, Options } from '@wdio/types'
-import { AllureRuntime, AllureGroup, AllureTest, AllureStep, Status, Stage } from "allure-js-commons"
+import { AllureRuntime, AllureGroup, AllureTest, AllureStep, Status, Stage, LabelName, md5 } from "allure-js-commons"
 
 import {
     getTestStatus, isEmpty, tellReporter, isMochaEachHooks, getErrorFromFailedTest,
@@ -30,7 +30,7 @@ class AllureReporter extends WDIOReporter {
     private _startedSuites: SuiteStats[] = []
 
     private _suites: Map<string, AllureGroup> = new Map()
-    private _test: Map<string, AllureTest> = new Map()
+    private _tests: Map<string, AllureTest> = new Map()
     private _steps: Map<string, AllureStep> = new Map()
 
     constructor(options: AllureReporterOptions = {}) {
@@ -80,14 +80,15 @@ class AllureReporter extends WDIOReporter {
         process.on(events.addArgument, this.addArgument.bind(this))
     }
 
-    setCaseParameters(cid: string | undefined, parentUid: string | undefined) {
-        const parentSuite = this.getParentSuite(parentUid)
-        const currentTest = this._allure.getCurrentTest()
+    // FIXME: need to be refactored after the all event handlers
+    setCaseParameters(test: AllureTest, parentUid?: string) {
+        const parentSuite = parentUid ? this._suites.get(parentUid) : undefined
 
         if (!this._isMultiremote) {
             const caps = this._capabilities as Capabilities.DesiredCapabilities
             const { browserName, deviceName, desired, device } = caps
-            let targetName = device || browserName || deviceName || cid
+            let targetName = device || browserName || deviceName
+
             // custom mobile grids can have device information in a `desired` cap
             if (desired && desired.deviceName && desired.platformVersion) {
                 targetName = `${device || desired.deviceName} ${desired.platformVersion}`
@@ -96,18 +97,20 @@ class AllureReporter extends WDIOReporter {
             const version = browserstackVersion || caps.browserVersion || caps.version || caps.platformVersion || ''
             const paramName = (deviceName || device) ? 'device' : 'browser'
             const paramValue = version ? `${targetName}-${version}` : targetName
-            currentTest.addParameter('argument', paramName, paramValue)
+
+            test.addParameter(paramName, paramValue || '')
         } else {
-            currentTest.addParameter('argument', 'isMultiremote', 'true')
+            test.addParameter('isMultiremote', 'true')
         }
 
         // Allure analytics labels. See https://github.com/allure-framework/allure2/blob/master/Analytics.md
-        currentTest.addLabel('language', 'javascript')
-        currentTest.addLabel('framework', 'wdio')
-        currentTest.addLabel('thread', cid)
+        test.addLabel(LabelName.LANGUAGE, 'javascript')
+        test.addLabel(LabelName.FRAMEWORK, 'wdio')
+        // FIXME:
+        // test.addLabel(LabelName.THREAD, cid)
 
-        if (parentSuite?.title) {
-            currentTest.addLabel('feature', parentSuite?.title)
+        if (parentSuite?.name) {
+            test.addLabel(LabelName.FEATURE, parentSuite.name)
         }
     }
 
@@ -141,30 +144,36 @@ class AllureReporter extends WDIOReporter {
     }
 
     onSuiteStart(suite: SuiteStats) {
-        // temp solution to keep suites stats index for saving allure test ops feature based structure
-        this._startedSuites.push(suite)
+        // handle cucumber scenario as AllureTest instead of AllureGroup
+        if (this._options.useCucumberStepReporter && suite.type === 'scenario') {
+            const currentTest = new AllureTest(this._allure)
 
-        if (this._options.useCucumberStepReporter) {
-            if (suite.type === 'feature') {
-                // handle cucumber features as allure "suite"
-                return this._allure.startSuite(suite.title)
-            }
+            currentTest.name = suite.title
+            currentTest.fullName = suite.fullTitle
+            currentTest.historyId = md5(suite.fullTitle)
+            currentTest.description = suite.description
 
-            // handle cucumber scenario as allure "case" instead of "suite"
-            this._allure.startCase(suite.title)
-            const currentTest = this._allure.getCurrentTest()
             this.getLabels(suite).forEach(({ name, value }) => {
                 currentTest.addLabel(name, value)
             })
-            if (suite.description) {
-                this.addDescription(suite)
-            }
-            return this.setCaseParameters(suite.cid, undefined)
+
+            this.setCaseParameters(currentTest)
+            this._tests.set(suite.uid, currentTest)
+            return
         }
 
-        const currentSuite = this._allure.getCurrentSuite()
-        const prefix = currentSuite ? currentSuite.name + ': ' : ''
-        this._allure.startSuite(prefix + suite.title)
+        const currentSuite = new AllureGroup(this._allure)
+
+        if (this._options.useCucumberStepReporter) {
+            currentSuite.name = suite.title
+        } else {
+            const parentSuite = suite.parent ? this._suites.get(suite.parent) : undefined
+            const currentSuiteNamePrefix = parentSuite ? `${parentSuite.name}: ` : ''
+
+            currentSuite.name = `${currentSuiteNamePrefix}${suite.title}`
+        }
+
+        this._suites.set(suite.uid, currentSuite)
     }
 
     onSuiteEnd(suite: SuiteStats) {
