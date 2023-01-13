@@ -76,6 +76,60 @@ class AllureReporter extends WDIOReporter {
         process.on(events.addArgument, this.addArgument.bind(this))
     }
 
+    setCaseParameters(cid: string | undefined, parentUid: string | undefined) {
+        const parentSuite = this.getParentSuite(parentUid)
+        const currentTest = this._allure.getCurrentTest()
+
+        if (!this._isMultiremote) {
+            const caps = this._capabilities as Capabilities.DesiredCapabilities
+            const { browserName, deviceName, desired, device } = caps
+            let targetName = device || browserName || deviceName || cid
+            // custom mobile grids can have device information in a `desired` cap
+            if (desired && desired.deviceName && desired.platformVersion) {
+                targetName = `${device || desired.deviceName} ${desired.platformVersion}`
+            }
+            const browserstackVersion = caps.os_version || caps.osVersion
+            const version = browserstackVersion || caps.browserVersion || caps.version || caps.platformVersion || ''
+            const paramName = (deviceName || device) ? 'device' : 'browser'
+            const paramValue = version ? `${targetName}-${version}` : targetName
+            currentTest.addParameter('argument', paramName, paramValue)
+        } else {
+            currentTest.addParameter('argument', 'isMultiremote', 'true')
+        }
+
+        // Allure analytics labels. See https://github.com/allure-framework/allure2/blob/master/Analytics.md
+        currentTest.addLabel('language', 'javascript')
+        currentTest.addLabel('framework', 'wdio')
+        currentTest.addLabel('thread', cid)
+
+        if (parentSuite?.title) {
+            currentTest.addLabel('feature', parentSuite?.title)
+        }
+    }
+
+    getParentSuite(uid?: string): SuiteStats | undefined {
+        if (!uid) {
+            return undefined
+        }
+
+        return this._startedSuites.find((suite) => suite.uid === uid)
+    }
+
+    getLabels({
+        tags
+    }: SuiteStats) {
+        const labels: { name: string, value: string }[] = []
+        if (tags) {
+            (tags as Tag[]).forEach((tag: Tag) => {
+                const label = tag.name.replace(/[@]/, '').split('=')
+                if (label.length === 2) {
+                    labels.push({ name: label[0], value: label[1] })
+                }
+            })
+        }
+        return labels
+    }
+
     onRunnerStart(runner: RunnerStats) {
         this._config = runner.config
         this._capabilities = runner.capabilities
@@ -170,60 +224,6 @@ class AllureReporter extends WDIOReporter {
 
         this._allure.startCase(testTitle)
         this.setCaseParameters(test.cid, test.parent)
-    }
-
-    setCaseParameters(cid: string | undefined, parentUid: string | undefined) {
-        const parentSuite = this.getParentSuite(parentUid)
-        const currentTest = this._allure.getCurrentTest()
-
-        if (!this._isMultiremote) {
-            const caps = this._capabilities as Capabilities.DesiredCapabilities
-            const { browserName, deviceName, desired, device } = caps
-            let targetName = device || browserName || deviceName || cid
-            // custom mobile grids can have device information in a `desired` cap
-            if (desired && desired.deviceName && desired.platformVersion) {
-                targetName = `${device || desired.deviceName} ${desired.platformVersion}`
-            }
-            const browserstackVersion = caps.os_version || caps.osVersion
-            const version = browserstackVersion || caps.browserVersion || caps.version || caps.platformVersion || ''
-            const paramName = (deviceName || device) ? 'device' : 'browser'
-            const paramValue = version ? `${targetName}-${version}` : targetName
-            currentTest.addParameter('argument', paramName, paramValue)
-        } else {
-            currentTest.addParameter('argument', 'isMultiremote', 'true')
-        }
-
-        // Allure analytics labels. See https://github.com/allure-framework/allure2/blob/master/Analytics.md
-        currentTest.addLabel('language', 'javascript')
-        currentTest.addLabel('framework', 'wdio')
-        currentTest.addLabel('thread', cid)
-
-        if (parentSuite?.title) {
-            currentTest.addLabel('feature', parentSuite?.title)
-        }
-    }
-
-    getParentSuite(uid?: string): SuiteStats | undefined {
-        if (!uid) {
-            return undefined
-        }
-
-        return this._startedSuites.find((suite) => suite.uid === uid)
-    }
-
-    getLabels({
-        tags
-    }: SuiteStats) {
-        const labels: { name: string, value: string }[] = []
-        if (tags) {
-            (tags as Tag[]).forEach((tag: Tag) => {
-                const label = tag.name.replace(/[@]/, '').split('=')
-                if (label.length === 2) {
-                    labels.push({ name: label[0], value: label[1] })
-                }
-            })
-        }
-        return labels
     }
 
     onTestPass() {
