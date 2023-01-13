@@ -1,10 +1,10 @@
-import { createRequire } from 'node:module'
 import { stringify } from 'csv-stringify/sync'
 import WDIOReporter, {
     SuiteStats, Tag, HookStats, RunnerStats, TestStats, BeforeCommandArgs,
     AfterCommandArgs, CommandArgs, Argument
 } from '@wdio/reporter'
 import type { Capabilities, Options } from '@wdio/types'
+import { AllureRuntime, AllureGroup, AllureTest, AllureStep, Status, Stage } from "allure-js-commons"
 
 import {
     getTestStatus, isEmpty, tellReporter, isMochaEachHooks, getErrorFromFailedTest,
@@ -14,20 +14,11 @@ import { events, PASSED, PENDING, SKIPPED, stepStatuses } from './constants.js'
 import {
     AddAttachmentEventArgs, AddDescriptionEventArgs, AddEnvironmentEventArgs,
     AddFeatureEventArgs, AddIssueEventArgs, AddLabelEventArgs, AddSeverityEventArgs,
-    AddStoryEventArgs, AddTestIdEventArgs, AllureReporterOptions, Status
+    AddStoryEventArgs, AddTestIdEventArgs, AllureReporterOptions,
 } from './types.js'
 
-const require = createRequire(import.meta.url)
-
-/**
- * Allure v1 has no proper TS support
- * ToDo(Christian): update to Allure v2 (https://github.com/webdriverio/webdriverio/issues/6313)
- */
-const Allure = require('allure-js-commons')
-const Step = require('allure-js-commons/beans/step.js')
-
 class AllureReporter extends WDIOReporter {
-    private _allure: any
+    private _allure: AllureRuntime
     private _capabilities: Capabilities.RemoteCapability
     private _isMultiremote?: boolean
     private _config?: Options.Testrunner
@@ -40,6 +31,7 @@ class AllureReporter extends WDIOReporter {
 
     constructor(options: AllureReporterOptions = {}) {
         const outputDir = options.outputDir || 'allure-results'
+
         super({
             ...options,
             outputDir,
@@ -47,11 +39,12 @@ class AllureReporter extends WDIOReporter {
         this._addConsoleLogs = false
         this._consoleOutput = ''
         this._originalStdoutWrite = process.stdout.write.bind(process.stdout)
-        this._allure = new Allure()
+        this._allure = new AllureRuntime({
+            resultsDir: outputDir,
+        })
         this._capabilities = {}
         this._options = options
 
-        this._allure.setOptions({ targetDir: outputDir })
         this.registerListeners()
 
         this._lastScreenshot = undefined
