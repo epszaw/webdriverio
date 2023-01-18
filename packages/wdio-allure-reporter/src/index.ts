@@ -287,17 +287,47 @@ class AllureReporter extends WDIOReporter {
         currentStep.stage = Stage.FINISHED
         currentStep.endStep()
     }
-        // if (this._options.useCucumberStepReporter) {
-        //     const suite = this._allure.getCurrentSuite()
-        //     if (suite && suite.currentStep instanceof Step) {
-        //         return this._allure.endStep('passed')
-        //     }
+
+    onTestFail(test: TestStats | HookStats) {
+        console.log('test fail', test)
+
+        const testError = getErrorFromFailedTest(test)
+
+        if (this._options.useCucumberStepReporter) {
+            const currentStep = this._steps.get(test.uid)!
+
+            currentStep.status = Status.FAILED
+            currentStep.stage = Stage.FINISHED
+            currentStep.detailsMessage = testError?.message
+            currentStep.detailsTrace = testError?.stack
+            currentStep.endStep()
+            return
+        }
+
+        const currentTest = this._tests.get(test.uid)!
+
+        currentTest.status = Status.FAILED
+        currentTest.stage = Stage.FINISHED
+        currentTest.detailsMessage = testError?.message
+        currentTest.detailsTrace = testError?.stack
+        currentTest.endTest()
+
+        // TODO:
+        // attachConsoleLogs(this._consoleOutput, this._allure)
+
+        // if (!this.isAnyTestRunning()) { // is any CASE running
+        //     this.onTestStart(test)
+        // } else {
+
+        //     this._allure.getCurrentTest().name = test.title
+        // }
+        // attachConsoleLogs(this._consoleOutput, this._allure)
+        // const status = getTestStatus(test, this._config)
+        // while (this._allure.getCurrentSuite().currentStep instanceof Step) {
+        //     this._allure.endStep(status)
         // }
 
-        // this._allure.endCase(PASSED)
-    }
-
-        this._allure.endCase(status, getErrorFromFailedTest(test))
+        // this._allure.endCase(status, getErrorFromFailedTest(test))
     }
 
     onTestSkip(test: TestStats) {
