@@ -331,17 +331,23 @@ class AllureReporter extends WDIOReporter {
     }
 
     onTestSkip(test: TestStats) {
-        attachConsoleLogs(this._consoleOutput, this._allure)
+        console.log('test skip', test)
+        // attachConsoleLogs(this._consoleOutput, this._allure)
+
         if (this._options.useCucumberStepReporter) {
-            const suite = this._allure.getCurrentSuite()
-            if (suite && suite.currentStep instanceof Step) {
-                this._allure.endStep('canceled')
-            }
-        } else if (!this._allure.getCurrentTest() || this._allure.getCurrentTest().name !== test.title) {
-            this._allure.pendingCase(test.title)
-        } else {
-            this._allure.endCase('pending')
+            const currentStep = this._steps.get(test.uid)!
+
+            currentStep.status = Status.SKIPPED
+            currentStep.stage = Stage.PENDING
+            currentStep.endStep()
+            return
         }
+
+        const currentTest = this._tests.get(test.uid)!
+
+        currentTest.status = Status.SKIPPED
+        currentTest.stage = Stage.PENDING
+        currentTest.endTest()
     }
 
     onBeforeCommand(command: BeforeCommandArgs) {
