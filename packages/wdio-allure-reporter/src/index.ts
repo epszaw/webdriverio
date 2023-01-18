@@ -4,7 +4,7 @@ import WDIOReporter, {
     AfterCommandArgs, CommandArgs, Argument
 } from '@wdio/reporter'
 import type { Capabilities, Options } from '@wdio/types'
-import { AllureRuntime, AllureGroup, AllureTest, AllureStep, Status, Stage, LabelName, md5 } from "allure-js-commons"
+import { AllureRuntime, AllureGroup, AllureTest, AllureStep, Status, Stage, LabelName, md5, ContentType } from 'allure-js-commons'
 
 import {
     getTestStatus, isEmpty, tellReporter, isMochaEachHooks, getErrorFromFailedTest,
@@ -146,7 +146,8 @@ class AllureReporter extends WDIOReporter {
     onSuiteStart(suite: SuiteStats) {
         // handle cucumber scenario as AllureTest instead of AllureGroup
         if (this._options.useCucumberStepReporter && suite.type === 'scenario') {
-            const currentTest = new AllureTest(this._allure)
+            const parentSuite = this._suites.get(suite.parent)!
+            const currentTest = parentSuite.startTest(suite.title)
 
             currentTest.name = suite.title
             currentTest.fullName = suite.fullTitle
@@ -228,68 +229,58 @@ class AllureReporter extends WDIOReporter {
     onTestStart(test: TestStats | HookStats) {
         this._consoleOutput = ''
 
+        let currentTest = this._tests.get(test.uid)
         const testTitle = test.currentTest ? test.currentTest : test.title
 
-        if (this.isAnyTestRunning() && this._allure.getCurrentTest().name == testTitle) {
+        if (currentTest && currentTest?.name === testTitle) {
             // Test already in progress, most likely started by a before each hook
-            this.setCaseParameters(test.cid, test.parent)
+            this.setCaseParameters(currentTest, test.parent)
             return
         }
 
-        if (this._options.useCucumberStepReporter) {
-            const step = this._allure.startStep(testTitle)
-            const testObj = test as TestStats
-            const argument = testObj?.argument as Argument
-            const dataTable = argument?.rows?.map((a: { cells: string[] }) => a?.cells)
-            if (dataTable) {
-                this._allure.addAttachment('Data Table', stringify(dataTable), 'text/csv')
-            }
+        if (!this._options.useCucumberStepReporter) {
+            currentTest = new AllureTest(this._allure)
+            currentTest.name = testTitle
 
-            return step
-        }
-
-        this._allure.startCase(testTitle)
-        this.setCaseParameters(test.cid, test.parent)
-    }
-
-    onTestPass() {
-        attachConsoleLogs(this._consoleOutput, this._allure)
-        if (this._options.useCucumberStepReporter) {
-            const suite = this._allure.getCurrentSuite()
-            if (suite && suite.currentStep instanceof Step) {
-                return this._allure.endStep('passed')
-            }
-        }
-
-        this._allure.endCase(PASSED)
-    }
-
-    onTestFail(test: TestStats | HookStats) {
-        if (this._options.useCucumberStepReporter) {
-            attachConsoleLogs(this._consoleOutput, this._allure)
-            const testStatus = getTestStatus(test, this._config)
-            const stepStatus: Status = Object.values(stepStatuses).indexOf(testStatus) >= 0 ?
-                testStatus : 'failed'
-            const suite = this._allure.getCurrentSuite()
-            if (suite && suite.currentStep instanceof Step) {
-                this._allure.endStep(stepStatus)
-            }
-            this._allure.endCase(testStatus, getErrorFromFailedTest(test))
+            this._tests.set(test.uid, currentTest)
+            this.setCaseParameters(currentTest, test.parent)
             return
         }
 
-        if (!this.isAnyTestRunning()) { // is any CASE running
+        // handle cucumber tests as AllureStep
+        const parentTest = this._tests.get(test.parent)!
+        const currentStep = parentTest.startStep(test.title)
+        const testObj = test as TestStats
+        const argument = testObj?.argument as Argument
+        const dataTable = argument?.rows?.map((a: { cells: string[] }) => a?.cells)
 
-            this.onTestStart(test)
-        } else {
+        if (dataTable) {
+            const attachmentFilename = this._allure.writeAttachment(stringify(dataTable), ContentType.CSV)
 
-            this._allure.getCurrentTest().name = test.title
+            currentStep.addAttachment(
+                'Data Table',
+                {
+                    contentType: ContentType.CSV,
+                },
+                attachmentFilename,
+            )
         }
-        attachConsoleLogs(this._consoleOutput, this._allure)
-        const status = getTestStatus(test, this._config)
-        while (this._allure.getCurrentSuite().currentStep instanceof Step) {
-            this._allure.endStep(status)
-        }
+
+        this._steps.set(test.uid, currentStep)
+    }
+
+    onTestPass(test: TestStats | HookStats) {
+        console.log('test pass', test)
+        // attachConsoleLogs(this._consoleOutput, this._allure)
+        // if (this._options.useCucumberStepReporter) {
+        //     const suite = this._allure.getCurrentSuite()
+        //     if (suite && suite.currentStep instanceof Step) {
+        //         return this._allure.endStep('passed')
+        //     }
+        // }
+
+        // this._allure.endCase(PASSED)
+    }
 
         this._allure.endCase(status, getErrorFromFailedTest(test))
     }
