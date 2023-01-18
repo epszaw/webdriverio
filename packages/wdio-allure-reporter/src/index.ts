@@ -272,6 +272,21 @@ class AllureReporter extends WDIOReporter {
     onTestPass(test: TestStats | HookStats) {
         console.log('test pass', test)
         // attachConsoleLogs(this._consoleOutput, this._allure)
+        if (!this._options.useCucumberStepReporter) {
+            const currentTest = this._tests.get(test.uid)!
+
+            currentTest.status = Status.PASSED
+            currentTest.stage = Stage.FINISHED
+            currentTest.endTest()
+            return
+        }
+
+        const currentStep = this._steps.get(test.uid)!
+
+        currentStep.status = Status.PASSED
+        currentStep.stage = Stage.FINISHED
+        currentStep.endStep()
+    }
         // if (this._options.useCucumberStepReporter) {
         //     const suite = this._allure.getCurrentSuite()
         //     if (suite && suite.currentStep instanceof Step) {
