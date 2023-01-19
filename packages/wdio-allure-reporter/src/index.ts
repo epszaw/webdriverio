@@ -270,9 +270,12 @@ class AllureReporter extends WDIOReporter {
         }
 
         if (!this._options.useCucumberStepReporter) {
+            const hashedTestId = md5(testId)
+
             currentTest = new AllureTest(this._allure)
             currentTest.name = testTitle
-
+            currentTest.testCaseId = hashedTestId
+            currentTest.historyId = hashedTestId
 
             this._tests.set(testId, currentTest)
             // TODO:
