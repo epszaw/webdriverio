@@ -159,13 +159,12 @@ class AllureReporter extends WDIOReporter {
         if (this._options.useCucumberStepReporter && suite.type === 'scenario') {
             const parentSuite = this._suites.get(parentId)!
             const currentTest = parentSuite.startTest(suite.title)
+            const hashedTestId = md5(testId)
 
             currentTest.name = suite.title
             currentTest.fullName = suite.fullTitle
-            currentTest.historyId = md5(suite.fullTitle)
-            currentTest.testCaseId = testId
-            // TODO:
-            // currentTest.historyId = testId
+            currentTest.testCaseId = hashedTestId
+            currentTest.historyId = hashedTestId
             currentTest.description = suite.description
 
             currentTest.addLabel(LabelName.SUITE, parentSuite.name)
