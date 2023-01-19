@@ -8,7 +8,7 @@ import { AllureRuntime, AllureGroup, AllureTest, AllureStep, Status, Stage, Labe
 
 import {
     getTestStatus, isEmpty, tellReporter, isMochaEachHooks, getErrorFromFailedTest,
-    isMochaAllHooks, getLinkByTemplate, attachConsoleLogs
+    isMochaAllHooks, getLinkByTemplate,
 } from './utils.js'
 import { events, PASSED, PENDING, SKIPPED, stepStatuses } from './constants.js'
 import {
@@ -54,6 +54,7 @@ class AllureReporter extends WDIOReporter {
         this._lastScreenshot = undefined
 
         let processObj:any = process
+
         if (options.addConsoleLogs || this._addConsoleLogs) {
             processObj.stdout.write = (chunk: string, encoding: BufferEncoding, callback:  ((err?: Error) => void)) => {
                 if (typeof chunk === 'string' && !chunk.includes('mwebdriver')) {
@@ -70,6 +71,15 @@ class AllureReporter extends WDIOReporter {
 
     private _getUnitParentId(unit: TestStats | SuiteStats | HookStats) {
         return [unit.cid, unit.parent].join(':')
+    }
+
+    private _attachLogs(unit: AllureTest | AllureStep) {
+        unit.addAttachment(
+            'Console Logs',
+            '<pre style="display: inline-block; background-color: #4d4d4d; color: white; padding: 20px; text-shadow: 1px 1px 0 #444; min-width: 100%; height: auto; min-height: 100%;">'
+                + '.........Console Logs.........\n\n' + this._consoleOutput + '</pre>',
+            ContentType.TEXT
+        )
     }
 
     registerListeners() {
@@ -197,13 +207,11 @@ class AllureReporter extends WDIOReporter {
         if (!this._options.useCucumberStepReporter || suite.type !== 'scenario') {
             const currentSuite = this._suites.get(testId)!
 
-
             currentSuite.endGroup()
             return
         }
 
         const currentTest = this._tests.get(testId)!
-
 
         // passing hooks are missing the 'state' property
         suite.hooks = suite.hooks!.map((hook) => {
@@ -262,9 +270,8 @@ class AllureReporter extends WDIOReporter {
         const testTitle = test.currentTest ? test.currentTest : test.title
 
         if (currentTest && currentTest?.name === testTitle) {
-            // TODO:
             // Test already in progress, most likely started by a before each hook
-            // this.setCaseParameters(currentTest, test.parent)
+            this.setCaseParameters(currentTest, parentId)
             return
         }
 
@@ -305,15 +312,12 @@ class AllureReporter extends WDIOReporter {
     }
 
     onTestPass(test: TestStats | HookStats) {
-        console.log('test pass', test)
         const testId = this._getUnitId(test)
-
-        // TODO:
-        // attachConsoleLogs(this._consoleOutput, this._allure)
 
         if (!this._options.useCucumberStepReporter) {
             const currentTest = this._tests.get(testId)!
 
+            this._attachLogs(currentTest)
 
             currentTest.status = Status.PASSED
             currentTest.stage = Stage.FINISHED
@@ -323,6 +327,7 @@ class AllureReporter extends WDIOReporter {
 
         const currentStep = this._steps.get(testId)!
 
+        this._attachLogs(currentStep)
 
         currentStep.status = Status.PASSED
         currentStep.stage = Stage.FINISHED
@@ -330,14 +335,13 @@ class AllureReporter extends WDIOReporter {
     }
 
     onTestFail(test: TestStats | HookStats) {
-        console.log('test fail', test)
-
         const testId = this._getUnitId(test)
         const testError = getErrorFromFailedTest(test)
 
         if (this._options.useCucumberStepReporter) {
             const currentStep = this._steps.get(testId)!
 
+            this._attachLogs(currentStep)
 
             currentStep.status = Status.FAILED
             currentStep.stage = Stage.FINISHED
@@ -349,15 +353,13 @@ class AllureReporter extends WDIOReporter {
 
         const currentTest = this._tests.get(testId)!
 
+        this._attachLogs(currentTest)
 
         currentTest.status = Status.FAILED
         currentTest.stage = Stage.FINISHED
         currentTest.detailsMessage = testError?.message
         currentTest.detailsTrace = testError?.stack
         currentTest.endTest()
-
-        // TODO:
-        // attachConsoleLogs(this._consoleOutput, this._allure)
 
         // if (!this.isAnyTestRunning()) { // is any CASE running
         //     this.onTestStart(test)
@@ -376,10 +378,11 @@ class AllureReporter extends WDIOReporter {
 
     onTestSkip(test: TestStats) {
         const testId = this._getUnitId(test)
-        // attachConsoleLogs(this._consoleOutput, this._allure)
 
         if (this._options.useCucumberStepReporter) {
             const currentStep = this._steps.get(testId)!
+
+            this._attachLogs(currentStep)
 
             currentStep.status = Status.SKIPPED
             currentStep.stage = Stage.PENDING
@@ -388,6 +391,8 @@ class AllureReporter extends WDIOReporter {
         }
 
         const currentTest = this._tests.get(testId)!
+
+        this._attachLogs(currentTest)
 
         currentTest.status = Status.SKIPPED
         currentTest.stage = Stage.PENDING
