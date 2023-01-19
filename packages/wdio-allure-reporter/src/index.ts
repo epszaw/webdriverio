@@ -88,9 +88,8 @@ class AllureReporter extends WDIOReporter {
         process.on(events.addArgument, this.addArgument.bind(this))
     }
 
-    // FIXME: need to be refactored after the all event handlers
-    setCaseParameters(test: AllureTest, parentUid?: string) {
-        const parentSuite = parentUid ? this._suites.get(parentUid) : undefined
+    setCaseParameters(test: AllureTest, parentId?: string) {
+        const parentSuite = parentId ? this._suites.get(parentId) : undefined
 
         if (!this._isMultiremote) {
             const caps = this._capabilities as Capabilities.DesiredCapabilities
@@ -101,6 +100,7 @@ class AllureReporter extends WDIOReporter {
             if (desired && desired.deviceName && desired.platformVersion) {
                 targetName = `${device || desired.deviceName} ${desired.platformVersion}`
             }
+
             const browserstackVersion = caps.os_version || caps.osVersion
             const version = browserstackVersion || caps.browserVersion || caps.version || caps.platformVersion || ''
             const paramName = (deviceName || device) ? 'device' : 'browser'
@@ -114,10 +114,10 @@ class AllureReporter extends WDIOReporter {
         // Allure analytics labels. See https://github.com/allure-framework/allure2/blob/master/Analytics.md
         test.addLabel(LabelName.LANGUAGE, 'javascript')
         test.addLabel(LabelName.FRAMEWORK, 'wdio')
-        // FIXME:
-        // test.addLabel(LabelName.THREAD, cid)
 
         if (parentSuite?.name) {
+            // TODO: do we need to group cucumber tests by suites?
+            // test.addLabel(LabelName.SUITE, parentSuite.name)
             test.addLabel(LabelName.FEATURE, parentSuite.name)
         }
     }
@@ -166,13 +166,12 @@ class AllureReporter extends WDIOReporter {
             currentTest.testCaseId = hashedTestId
             currentTest.historyId = hashedTestId
             currentTest.description = suite.description
+            currentTest.addLabel(LabelName.THREAD, suite.cid as string)
 
-            currentTest.addLabel(LabelName.SUITE, parentSuite.name)
             this.getLabels(suite).forEach(({ name, value }) => {
                 currentTest.addLabel(name, value)
             })
-
-            this.setCaseParameters(currentTest)
+            this.setCaseParameters(currentTest, parentId)
 
             this._tests.set(testId, currentTest)
             return
@@ -276,15 +275,14 @@ class AllureReporter extends WDIOReporter {
             currentTest.name = testTitle
             currentTest.testCaseId = hashedTestId
             currentTest.historyId = hashedTestId
+            currentTest.addLabel(LabelName.THREAD, test.cid)
 
             this._tests.set(testId, currentTest)
-            // TODO:
-            // this.setCaseParameters(currentTest, test.parent)
+            this.setCaseParameters(currentTest, parentId)
             return
         }
 
         // handle cucumber tests as AllureStep
-
         const parentTest = this._tests.get(parentId)!
         const currentStep = parentTest.startStep(test.title)
         const testObj = test as TestStats
