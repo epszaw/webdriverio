@@ -64,6 +64,14 @@ class AllureReporter extends WDIOReporter {
         }
     }
 
+    private _getUnitId(unit: TestStats | SuiteStats | HookStats) {
+        return [unit.cid, unit.uid].join(':')
+    }
+
+    private _getUnitParentId(unit: TestStats | SuiteStats | HookStats) {
+        return [unit.cid, unit.parent].join(':')
+    }
+
     registerListeners() {
         process.on(events.addLabel, this.addLabel.bind(this))
         process.on(events.addFeature, this.addFeature.bind(this))
@@ -144,22 +152,30 @@ class AllureReporter extends WDIOReporter {
     }
 
     onSuiteStart(suite: SuiteStats) {
+        const testId = this._getUnitId(suite)
+        const parentId = this._getUnitParentId(suite)
+
         // handle cucumber scenario as AllureTest instead of AllureGroup
         if (this._options.useCucumberStepReporter && suite.type === 'scenario') {
-            const parentSuite = this._suites.get(suite.parent)!
+            const parentSuite = this._suites.get(parentId)!
             const currentTest = parentSuite.startTest(suite.title)
 
             currentTest.name = suite.title
             currentTest.fullName = suite.fullTitle
             currentTest.historyId = md5(suite.fullTitle)
+            currentTest.testCaseId = testId
+            // TODO:
+            // currentTest.historyId = testId
             currentTest.description = suite.description
 
+            currentTest.addLabel(LabelName.SUITE, parentSuite.name)
             this.getLabels(suite).forEach(({ name, value }) => {
                 currentTest.addLabel(name, value)
             })
 
             this.setCaseParameters(currentTest)
-            this._tests.set(suite.uid, currentTest)
+
+            this._tests.set(testId, currentTest)
             return
         }
 
@@ -168,24 +184,28 @@ class AllureReporter extends WDIOReporter {
         if (this._options.useCucumberStepReporter) {
             currentSuite.name = suite.title
         } else {
-            const parentSuite = suite.parent ? this._suites.get(suite.parent) : undefined
+            const parentSuite = suite.parent ? this._suites.get(parentId) : undefined
             const currentSuiteNamePrefix = parentSuite ? `${parentSuite.name}: ` : ''
 
             currentSuite.name = `${currentSuiteNamePrefix}${suite.title}`
         }
 
-        this._suites.set(suite.uid, currentSuite)
+        this._suites.set(testId, currentSuite)
     }
 
     onSuiteEnd(suite: SuiteStats) {
+        const testId = this._getUnitId(suite)
+
         if (!this._options.useCucumberStepReporter || suite.type !== 'scenario') {
-            const currentSuite = this._suites.get(suite.uid)!
+            const currentSuite = this._suites.get(testId)!
+
 
             currentSuite.endGroup()
             return
         }
 
-        const currentTest = this._tests.get(suite.uid)!
+        const currentTest = this._tests.get(testId)!
+
 
         // passing hooks are missing the 'state' property
         suite.hooks = suite.hooks!.map((hook) => {
@@ -194,8 +214,16 @@ class AllureReporter extends WDIOReporter {
             return hook
         })
 
-        const suiteChildren = [...suite.tests!, ...suite.hooks]
-        const isPassed = !suiteChildren.some(item => item.state !== Status.PASSED)
+        const isFailed = suite.hooksAndTests.some(item => item.state === Status.FAILED)
+
+        if (isFailed) {
+            currentTest.status = Status.FAILED
+            currentTest.stage = Stage.FINISHED
+            currentTest.endTest()
+            return
+        }
+
+        const isPassed = !suite.hooksAndTests.some(item => item.state !== Status.PASSED)
 
         if (isPassed) {
             currentTest.status = Status.PASSED
@@ -216,7 +244,7 @@ class AllureReporter extends WDIOReporter {
         }
 
         // A scenario is it passed if certain steps are passed and all other are skipped and every hooks are passed or skipped
-        const isPartiallySkipped = suiteChildren.every(item => item.state === PASSED || item.state === SKIPPED)
+        const isPartiallySkipped = suite.hooksAndTests.every(item => item.state === PASSED || item.state === SKIPPED)
 
         if (isPartiallySkipped) {
             currentTest.status = Status.PASSED
@@ -227,14 +255,18 @@ class AllureReporter extends WDIOReporter {
     }
 
     onTestStart(test: TestStats | HookStats) {
+        const testId = this._getUnitId(test)
+        const parentId = this._getUnitParentId(test)
+
         this._consoleOutput = ''
 
-        let currentTest = this._tests.get(test.uid)
+        let currentTest = this._tests.get(testId)
         const testTitle = test.currentTest ? test.currentTest : test.title
 
         if (currentTest && currentTest?.name === testTitle) {
+            // TODO:
             // Test already in progress, most likely started by a before each hook
-            this.setCaseParameters(currentTest, test.parent)
+            // this.setCaseParameters(currentTest, test.parent)
             return
         }
 
@@ -242,13 +274,16 @@ class AllureReporter extends WDIOReporter {
             currentTest = new AllureTest(this._allure)
             currentTest.name = testTitle
 
-            this._tests.set(test.uid, currentTest)
-            this.setCaseParameters(currentTest, test.parent)
+
+            this._tests.set(testId, currentTest)
+            // TODO:
+            // this.setCaseParameters(currentTest, test.parent)
             return
         }
 
         // handle cucumber tests as AllureStep
-        const parentTest = this._tests.get(test.parent)!
+
+        const parentTest = this._tests.get(parentId)!
         const currentStep = parentTest.startStep(test.title)
         const testObj = test as TestStats
         const argument = testObj?.argument as Argument
@@ -266,14 +301,19 @@ class AllureReporter extends WDIOReporter {
             )
         }
 
-        this._steps.set(test.uid, currentStep)
+        this._steps.set(testId, currentStep)
     }
 
     onTestPass(test: TestStats | HookStats) {
         console.log('test pass', test)
+        const testId = this._getUnitId(test)
+
+        // TODO:
         // attachConsoleLogs(this._consoleOutput, this._allure)
+
         if (!this._options.useCucumberStepReporter) {
-            const currentTest = this._tests.get(test.uid)!
+            const currentTest = this._tests.get(testId)!
+
 
             currentTest.status = Status.PASSED
             currentTest.stage = Stage.FINISHED
@@ -281,7 +321,8 @@ class AllureReporter extends WDIOReporter {
             return
         }
 
-        const currentStep = this._steps.get(test.uid)!
+        const currentStep = this._steps.get(testId)!
+
 
         currentStep.status = Status.PASSED
         currentStep.stage = Stage.FINISHED
@@ -291,10 +332,12 @@ class AllureReporter extends WDIOReporter {
     onTestFail(test: TestStats | HookStats) {
         console.log('test fail', test)
 
+        const testId = this._getUnitId(test)
         const testError = getErrorFromFailedTest(test)
 
         if (this._options.useCucumberStepReporter) {
-            const currentStep = this._steps.get(test.uid)!
+            const currentStep = this._steps.get(testId)!
+
 
             currentStep.status = Status.FAILED
             currentStep.stage = Stage.FINISHED
@@ -304,7 +347,8 @@ class AllureReporter extends WDIOReporter {
             return
         }
 
-        const currentTest = this._tests.get(test.uid)!
+        const currentTest = this._tests.get(testId)!
+
 
         currentTest.status = Status.FAILED
         currentTest.stage = Stage.FINISHED
@@ -331,11 +375,11 @@ class AllureReporter extends WDIOReporter {
     }
 
     onTestSkip(test: TestStats) {
-        console.log('test skip', test)
+        const testId = this._getUnitId(test)
         // attachConsoleLogs(this._consoleOutput, this._allure)
 
         if (this._options.useCucumberStepReporter) {
-            const currentStep = this._steps.get(test.uid)!
+            const currentStep = this._steps.get(testId)!
 
             currentStep.status = Status.SKIPPED
             currentStep.stage = Stage.PENDING
@@ -343,7 +387,7 @@ class AllureReporter extends WDIOReporter {
             return
         }
 
-        const currentTest = this._tests.get(test.uid)!
+        const currentTest = this._tests.get(testId)!
 
         currentTest.status = Status.SKIPPED
         currentTest.stage = Stage.PENDING
