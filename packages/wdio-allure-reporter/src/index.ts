@@ -29,9 +29,11 @@ class AllureReporter extends WDIOReporter {
     private _addConsoleLogs: boolean
     private _startedSuites: SuiteStats[] = []
 
+    // FIXME: additionaly need to add default cid to support single thread mode
     private _suites: Map<string, AllureGroup> = new Map()
     private _tests: Map<string, AllureTest> = new Map()
     private _steps: Map<string, AllureStep> = new Map()
+    private _commandSteps: Map<string, AllureStep> = new Map()
 
     constructor(options: AllureReporterOptions = {}) {
         const outputDir = options.outputDir || 'allure-results'
@@ -70,6 +72,8 @@ class AllureReporter extends WDIOReporter {
     }
 
     private _attachLogs(unit: AllureTest | AllureStep) {
+        if (!this._consoleOutput) return
+
         const logsContent = `.........Console Logs.........\n\n${this._consoleOutput}`
         const attachmentFilename = this._allure.writeAttachment(logsContent, ContentType.TEXT)
 
@@ -79,6 +83,46 @@ class AllureReporter extends WDIOReporter {
                 contentType: ContentType.TEXT
             },
             attachmentFilename
+        )
+    }
+
+    private _attachJSON(unit: AllureTest | AllureStep, name: string, json: any) {
+        const content = JSON.stringify(json, null, 2)
+        const isStr = typeof json === 'string'
+        const contentType = isStr ? ContentType.JSON : ContentType.TEXT
+        // TODO: research, when it possible
+        const attachmentFilename = this._allure.writeAttachment(isStr ? content : `${content}`, contentType)
+
+        unit.addAttachment(
+            name,
+            {
+                contentType,
+            },
+            attachmentFilename
+        )
+    }
+
+    private _attachScreenshot(unit: AllureTest | AllureStep, name: string, content: Buffer) {
+        const attachmentFilename = this._allure.writeAttachment(content, ContentType.PNG)
+
+        unit.addAttachment(
+            name,
+            {
+                contentType: ContentType.PNG,
+            },
+            attachmentFilename
+        )
+    }
+
+
+    private _isScreenshotCommand(command: CommandArgs) {
+        const isScrenshotEndpoint = /\/session\/[^/]*(\/element\/[^/]*)?\/screenshot/
+
+        return (
+            // WebDriver protocol
+            (command.endpoint && isScrenshotEndpoint.test(command.endpoint)) ||
+            // DevTools protocol
+            command.command === 'takeScreenshot'
         )
     }
 
@@ -131,9 +175,7 @@ class AllureReporter extends WDIOReporter {
     }
 
     getParentSuite(uid?: string): SuiteStats | undefined {
-        if (!uid) {
-            return undefined
-        }
+        if (!uid) return undefined
 
         return this._startedSuites.find((suite) => suite.uid === uid)
     }
@@ -203,6 +245,7 @@ class AllureReporter extends WDIOReporter {
             const currentSuite = this._suites.get(suite.cid as string)!
 
             currentSuite.endGroup()
+            this._suites.delete(suite.cid as string)
             return
         }
 
@@ -221,6 +264,7 @@ class AllureReporter extends WDIOReporter {
             currentTest.status = Status.FAILED
             currentTest.stage = Stage.FINISHED
             currentTest.endTest()
+            this._tests.delete(suite.cid as string)
             return
         }
 
@@ -230,6 +274,7 @@ class AllureReporter extends WDIOReporter {
             currentTest.status = Status.PASSED
             currentTest.stage = Stage.FINISHED
             currentTest.endTest()
+            this._tests.delete(suite.cid as string)
             return
         }
 
@@ -241,6 +286,7 @@ class AllureReporter extends WDIOReporter {
             currentTest.status = Status.SKIPPED
             currentTest.stage = Stage.PENDING
             currentTest.endTest()
+            this._tests.delete(suite.cid as string)
             return
         }
 
@@ -251,6 +297,7 @@ class AllureReporter extends WDIOReporter {
             currentTest.status = Status.PASSED
             currentTest.stage = Stage.FINISHED
             currentTest.endTest()
+            this._tests.delete(suite.cid as string)
             return
         }
     }
@@ -314,6 +361,7 @@ class AllureReporter extends WDIOReporter {
             currentTest.status = Status.PASSED
             currentTest.stage = Stage.FINISHED
             currentTest.endTest()
+            this._tests.delete(test.cid)
             return
         }
 
@@ -324,6 +372,7 @@ class AllureReporter extends WDIOReporter {
         currentStep.status = Status.PASSED
         currentStep.stage = Stage.FINISHED
         currentStep.endStep()
+        this._steps.delete(test.cid)
     }
 
     onTestFail(test: TestStats | HookStats) {
@@ -339,6 +388,7 @@ class AllureReporter extends WDIOReporter {
             currentStep.detailsMessage = testError?.message
             currentStep.detailsTrace = testError?.stack
             currentStep.endStep()
+            this._steps.delete(test.cid)
             return
         }
 
@@ -351,7 +401,9 @@ class AllureReporter extends WDIOReporter {
         currentTest.detailsMessage = testError?.message
         currentTest.detailsTrace = testError?.stack
         currentTest.endTest()
+        this._tests.delete(test.cid)
 
+        // TODO:
         // if (!this.isAnyTestRunning()) { // is any CASE running
         //     this.onTestStart(test)
         // } else {
@@ -389,57 +441,55 @@ class AllureReporter extends WDIOReporter {
     }
 
     onBeforeCommand(command: BeforeCommandArgs) {
-        if (!this.isAnyTestRunning()) {
-            return
-        }
-
         const { disableWebdriverStepsReporting } = this._options
 
-        if (disableWebdriverStepsReporting || this._isMultiremote) {
-            return
-        }
+        if (disableWebdriverStepsReporting || this._isMultiremote) return
 
-        this._allure.startStep(command.method
-            ? `${command.method} ${command.endpoint}`
-            : command.command
-        )
+        const currentTest = this._tests.get(command.cid)!
+        const currentStep = this._steps.get(command.cid)
+        const currentUnit = (currentStep || currentTest)
 
-        const payload = command.body || command.params
-        if (!isEmpty(payload)) {
-            this.dumpJSON('Request', payload)
-        }
+        if (!currentUnit) return
+
+        const commandPayload = command.body || command.params
+        const commandStep = currentUnit.startStep(command.method ? `${command.method} ${command.endpoint}` : command.command as string)
+
+        this._commandSteps.set(command.sessionId, commandStep)
+
+        if (isEmpty(commandPayload)) return
+
+        this._attachJSON(commandStep, 'Request', commandPayload)
     }
 
     onAfterCommand(command: AfterCommandArgs) {
         const { disableWebdriverStepsReporting, disableWebdriverScreenshotsReporting } = this._options
-        if (this.isScreenshotCommand(command) && command.result.value) {
-            if (!disableWebdriverScreenshotsReporting) {
-                this._lastScreenshot = command.result.value
-            }
+        const currentTest = this._tests.get(command.cid)!
+        const currentStep = this._steps.get(command.cid)
+        const currentUnit = (currentStep || currentTest)
+
+        if (!currentUnit) return
+
+        const isScreenshotCommand = this._isScreenshotCommand(command)
+        const commandResult = command?.result?.value
+
+        if (!disableWebdriverScreenshotsReporting && isScreenshotCommand && commandResult) {
+            this._attachScreenshot(currentUnit, 'Screenshot', Buffer.from(commandResult, 'base64'))
         }
 
-        if (!this.isAnyTestRunning()) {
-            return
+        if (disableWebdriverStepsReporting || this._isMultiremote) return
+
+        const commandStep = this._commandSteps.get(command.sessionId)
+
+        if (!commandStep) return
+
+        if (commandResult && !isScreenshotCommand) {
+            this._attachJSON(commandStep, 'Response', commandResult)
         }
 
-        this.attachScreenshot()
-
-        if (this._isMultiremote) {
-            return
-        }
-
-        if (!disableWebdriverStepsReporting) {
-            if (command.result && command.result.value && !this.isScreenshotCommand(command)) {
-                this.dumpJSON('Response', command.result.value)
-            }
-
-            const suite = this._allure.getCurrentSuite()
-            if (!suite || !(suite.currentStep instanceof Step)) {
-                return
-            }
-
-            this._allure.endStep('passed')
-        }
+        commandStep.status = Status.PASSED
+        commandStep.stage = Stage.FINISHED
+        commandStep.endStep()
+        this._commandSteps.delete(command.sessionId)
     }
 
     onHookStart(hook: HookStats) {
