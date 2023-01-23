@@ -29,11 +29,17 @@ class AllureReporter extends WDIOReporter {
     private _addConsoleLogs: boolean
     private _startedSuites: SuiteStats[] = []
 
-    // FIXME: additionaly need to add default cid to support single thread mode
-    private _suites: Map<string, AllureGroup> = new Map()
-    private _tests: Map<string, AllureTest> = new Map()
-    private _steps: Map<string, AllureStep> = new Map()
-    private _commandSteps: Map<string, AllureStep> = new Map()
+    // TODO:
+    private _suite: AllureGroup | undefined
+    private _test: AllureTest | undefined
+    private _step: AllureStep | undefined
+    private _command: AllureStep | undefined
+
+    // private _suites: Map<string, AllureGroup> = new Map()
+    // private _tests: Map<string, AllureTest> = new Map()
+    // private _steps: Map<string, AllureStep> = new Map()
+    // FIXME: better to store all steps in set or array?
+    // private _commandSteps: Map<string, AllureStep> = new Map()
 
     constructor(options: AllureReporterOptions = {}) {
         const outputDir = options.outputDir || 'allure-results'
@@ -65,10 +71,6 @@ class AllureReporter extends WDIOReporter {
                 return this._originalStdoutWrite(chunk, encoding, callback)
             }
         }
-    }
-
-    private _getUnitId(unit: TestStats | SuiteStats | HookStats) {
-        return [unit.cid, unit.uid].join(':')
     }
 
     private _attachLogs(unit: AllureTest | AllureStep) {
@@ -114,7 +116,6 @@ class AllureReporter extends WDIOReporter {
         )
     }
 
-
     private _isScreenshotCommand(command: CommandArgs) {
         const isScrenshotEndpoint = /\/session\/[^/]*(\/element\/[^/]*)?\/screenshot/
 
@@ -142,7 +143,9 @@ class AllureReporter extends WDIOReporter {
         process.on(events.addArgument, this.addArgument.bind(this))
     }
 
-    setCaseParameters(test: AllureTest, parentSuite?: AllureGroup) {
+    setTestParameters() {
+        const currentTest = this._test!
+
         if (!this._isMultiremote) {
             const caps = this._capabilities as Capabilities.DesiredCapabilities
             const { browserName, deviceName, desired, device } = caps
@@ -158,20 +161,22 @@ class AllureReporter extends WDIOReporter {
             const paramName = (deviceName || device) ? 'device' : 'browser'
             const paramValue = version ? `${targetName}-${version}` : targetName
 
-            test.addParameter(paramName, paramValue || '')
+            currentTest.addParameter(paramName, paramValue || '')
         } else {
-            test.addParameter('isMultiremote', 'true')
+            currentTest.addParameter('isMultiremote', 'true')
         }
 
-        // Allure analytics labels. See https://github.com/allure-framework/allure2/blob/master/Analytics.md
-        test.addLabel(LabelName.LANGUAGE, 'javascript')
-        test.addLabel(LabelName.FRAMEWORK, 'wdio')
+        currentTest.addLabel(LabelName.LANGUAGE, 'javascript')
+        currentTest.addLabel(LabelName.FRAMEWORK, 'wdio')
 
-        if (parentSuite?.name) {
-            // TODO: do we need to group cucumber tests by suites?
-            // test.addLabel(LabelName.SUITE, parentSuite.name)
-            test.addLabel(LabelName.FEATURE, parentSuite.name)
+        if (!this._suite?.name) return
+
+        if (this._options.useCucumberStepReporter) {
+            currentTest.addLabel(LabelName.FEATURE, this._suite?.name)
+            return
         }
+
+        currentTest.addLabel(LabelName.SUITE, this._suite?.name)
     }
 
     getParentSuite(uid?: string): SuiteStats | undefined {
@@ -202,27 +207,23 @@ class AllureReporter extends WDIOReporter {
     }
 
     onSuiteStart(suite: SuiteStats) {
-        const testId = this._getUnitId(suite)
-
         // handle cucumber scenario as AllureTest instead of AllureGroup
         if (this._options.useCucumberStepReporter && suite.type === 'scenario') {
-            const parentSuite = this._suites.get(suite.cid as string)!
-            const currentTest = parentSuite.startTest(suite.title)
-            const hashedTestId = md5(testId)
+            const hashedTestId = md5(`${suite.uid}:${suite.fullTitle}`)
+            const currentTest = this._suite!.startTest(suite.title)
 
             currentTest.name = suite.title
             currentTest.fullName = suite.fullTitle
             currentTest.testCaseId = hashedTestId
             currentTest.historyId = hashedTestId
             currentTest.description = suite.description
-            currentTest.addLabel(LabelName.THREAD, suite.cid as string)
+            currentTest.addLabel(LabelName.THREAD, suite.uid)
 
             this.getLabels(suite).forEach(({ name, value }) => {
                 currentTest.addLabel(name, value)
             })
-            this.setCaseParameters(currentTest, this._suites.get(suite.cid as string))
-
-            this._tests.set(suite.cid as string, currentTest)
+            this._test = currentTest
+            this.setTestParameters()
             return
         }
 
@@ -231,25 +232,22 @@ class AllureReporter extends WDIOReporter {
         if (this._options.useCucumberStepReporter) {
             currentSuite.name = suite.title
         } else {
-            const parentSuite = suite.parent ? this._suites.get(suite.cid as string) : undefined
-            const currentSuiteNamePrefix = parentSuite ? `${parentSuite.name}: ` : ''
+            const currentSuiteNamePrefix = this._suite ? `${this._suite.name}: ` : ''
 
             currentSuite.name = `${currentSuiteNamePrefix}${suite.title}`
         }
 
-        this._suites.set(suite.cid as string, currentSuite)
+        this._suite = currentSuite
     }
 
     onSuiteEnd(suite: SuiteStats) {
         if (!this._options.useCucumberStepReporter || suite.type !== 'scenario') {
-            const currentSuite = this._suites.get(suite.cid as string)!
-
-            currentSuite.endGroup()
-            this._suites.delete(suite.cid as string)
+            this._suite!.endGroup()
+            this._suite = undefined
             return
         }
 
-        const currentTest = this._tests.get(suite.cid as string)!
+        const currentTest = this._test!
 
         // passing hooks are missing the 'state' property
         suite.hooks = suite.hooks!.map((hook) => {
@@ -264,7 +262,7 @@ class AllureReporter extends WDIOReporter {
             currentTest.status = Status.FAILED
             currentTest.stage = Stage.FINISHED
             currentTest.endTest()
-            this._tests.delete(suite.cid as string)
+            this._test = undefined
             return
         }
 
@@ -274,7 +272,7 @@ class AllureReporter extends WDIOReporter {
             currentTest.status = Status.PASSED
             currentTest.stage = Stage.FINISHED
             currentTest.endTest()
-            this._tests.delete(suite.cid as string)
+            this._test = undefined
             return
         }
 
@@ -286,7 +284,7 @@ class AllureReporter extends WDIOReporter {
             currentTest.status = Status.SKIPPED
             currentTest.stage = Stage.PENDING
             currentTest.endTest()
-            this._tests.delete(suite.cid as string)
+            this._test = undefined
             return
         }
 
@@ -297,42 +295,39 @@ class AllureReporter extends WDIOReporter {
             currentTest.status = Status.PASSED
             currentTest.stage = Stage.FINISHED
             currentTest.endTest()
-            this._tests.delete(suite.cid as string)
+            this._test = undefined
             return
         }
     }
 
     onTestStart(test: TestStats | HookStats) {
-        const testId = this._getUnitId(test)
-
         this._consoleOutput = ''
 
-        let currentTest = this._tests.get(test.cid)
+        // let currentTest = this._tests.get(test.uid)
         const testTitle = test.currentTest ? test.currentTest : test.title
 
-        if (currentTest && currentTest?.name === testTitle) {
+        if (this._test?.name === testTitle) {
             // Test already in progress, most likely started by a before each hook
-            this.setCaseParameters(currentTest, this._suites.get(test.cid))
+            this.setTestParameters()
             return
         }
 
         if (!this._options.useCucumberStepReporter) {
-            const hashedTestId = md5(testId)
+            const hashedTestId = md5(`${test.uid}:${testTitle}`)
+            const currentTest = new AllureTest(this._allure)
 
-            currentTest = new AllureTest(this._allure)
             currentTest.name = testTitle
             currentTest.testCaseId = hashedTestId
             currentTest.historyId = hashedTestId
-            currentTest.addLabel(LabelName.THREAD, test.cid)
+            currentTest.addLabel(LabelName.THREAD, test.uid)
 
-            this._tests.set(test.cid, currentTest)
-            this.setCaseParameters(currentTest, this._suites.get(test.cid))
+            this._test = currentTest
+            this.setTestParameters()
             return
         }
 
         // handle cucumber tests as AllureStep
-        const parentTest = this._tests.get(test.cid)!
-        const currentStep = parentTest.startStep(test.title)
+        const currentStep = this._test!.startStep(test.title)
         const testObj = test as TestStats
         const argument = testObj?.argument as Argument
         const dataTable = argument?.rows?.map((a: { cells: string[] }) => a?.cells)
@@ -349,37 +344,40 @@ class AllureReporter extends WDIOReporter {
             )
         }
 
-        this._steps.set(test.cid, currentStep)
+        this._step = currentStep
     }
 
-    onTestPass(test: TestStats | HookStats) {
-        if (!this._options.useCucumberStepReporter) {
-            const currentTest = this._tests.get(test.cid)!
+    onTestPass() {
+        if (this._options.useCucumberStepReporter) {
 
-            this._attachLogs(currentTest)
+            const currentStep = this._step!
 
-            currentTest.status = Status.PASSED
-            currentTest.stage = Stage.FINISHED
-            currentTest.endTest()
-            this._tests.delete(test.cid)
+            this._attachLogs(currentStep)
+
+            currentStep.status = Status.PASSED
+            currentStep.stage = Stage.FINISHED
+            currentStep.endStep()
+
+            this._step = undefined
             return
         }
 
-        const currentStep = this._steps.get(test.cid)!
+        const currentTest = this._test!
 
-        this._attachLogs(currentStep)
+        this._attachLogs(currentTest)
 
-        currentStep.status = Status.PASSED
-        currentStep.stage = Stage.FINISHED
-        currentStep.endStep()
-        this._steps.delete(test.cid)
+        currentTest.status = Status.PASSED
+        currentTest.stage = Stage.FINISHED
+        currentTest.endTest()
+
+        this._test = undefined
     }
 
     onTestFail(test: TestStats | HookStats) {
         const testError = getErrorFromFailedTest(test)
 
         if (this._options.useCucumberStepReporter) {
-            const currentStep = this._steps.get(test.cid)!
+            const currentStep = this._step!
 
             this._attachLogs(currentStep)
 
@@ -388,11 +386,12 @@ class AllureReporter extends WDIOReporter {
             currentStep.detailsMessage = testError?.message
             currentStep.detailsTrace = testError?.stack
             currentStep.endStep()
-            this._steps.delete(test.cid)
+
+            this._step = undefined
             return
         }
 
-        const currentTest = this._tests.get(test.cid)!
+        const currentTest = this._test!
 
         this._attachLogs(currentTest)
 
@@ -401,7 +400,8 @@ class AllureReporter extends WDIOReporter {
         currentTest.detailsMessage = testError?.message
         currentTest.detailsTrace = testError?.stack
         currentTest.endTest()
-        this._tests.delete(test.cid)
+
+        this._test = undefined
 
         // TODO:
         // if (!this.isAnyTestRunning()) { // is any CASE running
@@ -419,53 +419,50 @@ class AllureReporter extends WDIOReporter {
         // this._allure.endCase(status, getErrorFromFailedTest(test))
     }
 
-    onTestSkip(test: TestStats) {
+    onTestSkip() {
         if (this._options.useCucumberStepReporter) {
-            const currentStep = this._steps.get(test.cid)!
+            const currentStep = this._step!
 
             this._attachLogs(currentStep)
 
             currentStep.status = Status.SKIPPED
             currentStep.stage = Stage.PENDING
             currentStep.endStep()
+
+            this._step = undefined
             return
         }
 
-        const currentTest = this._tests.get(test.cid)!
+        const currentTest = this._test!
 
         this._attachLogs(currentTest)
 
         currentTest.status = Status.SKIPPED
         currentTest.stage = Stage.PENDING
         currentTest.endTest()
+        this._test = undefined
     }
 
     onBeforeCommand(command: BeforeCommandArgs) {
         const { disableWebdriverStepsReporting } = this._options
+        const currentUnit = this._step || this._test
 
         if (disableWebdriverStepsReporting || this._isMultiremote) return
-
-        const currentTest = this._tests.get(command.cid)!
-        const currentStep = this._steps.get(command.cid)
-        const currentUnit = (currentStep || currentTest)
-
         if (!currentUnit) return
 
         const commandPayload = command.body || command.params
         const commandStep = currentUnit.startStep(command.method ? `${command.method} ${command.endpoint}` : command.command as string)
 
-        this._commandSteps.set(command.sessionId, commandStep)
+        this._command = commandStep
 
         if (isEmpty(commandPayload)) return
 
-        this._attachJSON(commandStep, 'Request', commandPayload)
+        this._attachJSON(this._command, 'Request', commandPayload)
     }
 
     onAfterCommand(command: AfterCommandArgs) {
         const { disableWebdriverStepsReporting, disableWebdriverScreenshotsReporting } = this._options
-        const currentTest = this._tests.get(command.cid)!
-        const currentStep = this._steps.get(command.cid)
-        const currentUnit = (currentStep || currentTest)
+        const currentUnit = this._step || this._test
 
         if (!currentUnit) return
 
@@ -477,19 +474,16 @@ class AllureReporter extends WDIOReporter {
         }
 
         if (disableWebdriverStepsReporting || this._isMultiremote) return
-
-        const commandStep = this._commandSteps.get(command.sessionId)
-
-        if (!commandStep) return
+        if (!this._command) return
 
         if (commandResult && !isScreenshotCommand) {
-            this._attachJSON(commandStep, 'Response', commandResult)
+            this._attachJSON(this._command, 'Response', commandResult)
         }
 
-        commandStep.status = Status.PASSED
-        commandStep.stage = Stage.FINISHED
-        commandStep.endStep()
-        this._commandSteps.delete(command.sessionId)
+        this._command.status = Status.PASSED
+        this._command.stage = Stage.FINISHED
+        this._command.endStep()
+        this._command = undefined
     }
 
     onHookStart(hook: HookStats) {
