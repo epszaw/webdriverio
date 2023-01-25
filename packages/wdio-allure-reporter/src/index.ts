@@ -10,7 +10,7 @@ import {
     getTestStatus, isEmpty, tellReporter, isMochaEachHooks, getErrorFromFailedTest,
     isMochaAllHooks, getLinkByTemplate,
 } from './utils.js'
-import { events, PASSED, PENDING, SKIPPED, stepStatuses } from './constants.js'
+import { events, PASSED, FAILED, PENDING, SKIPPED, stepStatuses } from './constants.js'
 import {
     AddAttachmentEventArgs, AddDescriptionEventArgs, AddEnvironmentEventArgs,
     AddFeatureEventArgs, AddIssueEventArgs, AddLabelEventArgs, AddSeverityEventArgs,
@@ -28,6 +28,9 @@ class AllureReporter extends WDIOReporter {
     private _originalStdoutWrite: Function
     private _addConsoleLogs: boolean
     private _startedSuites: SuiteStats[] = []
+
+    private _runningSuites: Map<string, AllureGroup> = new Map()
+    private _runningTests: Map<string, AllureTest | AllureStep> = new Map()
 
     // TODO:
     private _suite: AllureGroup | undefined
@@ -251,12 +254,12 @@ class AllureReporter extends WDIOReporter {
 
         // passing hooks are missing the 'state' property
         suite.hooks = suite.hooks!.map((hook) => {
-            hook.state = hook.state || Status.PASSED
+            hook.state = hook.state || PASSED
 
             return hook
         })
 
-        const isFailed = suite.hooksAndTests.some(item => item.state === Status.FAILED)
+        const isFailed = suite.hooksAndTests.some(item => item.state === FAILED)
 
         if (isFailed) {
             currentTest.status = Status.FAILED
@@ -266,7 +269,7 @@ class AllureReporter extends WDIOReporter {
             return
         }
 
-        const isPassed = !suite.hooksAndTests.some(item => item.state !== Status.PASSED)
+        const isPassed = !suite.hooksAndTests.some(item => item.state !== PASSED)
 
         if (isPassed) {
             currentTest.status = Status.PASSED
@@ -347,7 +350,7 @@ class AllureReporter extends WDIOReporter {
         this._step = currentStep
     }
 
-    onTestPass() {
+    onTestPass(test: TestStats | HookStats) {
         if (this._options.useCucumberStepReporter) {
 
             const currentStep = this._step!
@@ -487,21 +490,20 @@ class AllureReporter extends WDIOReporter {
     }
 
     onHookStart(hook: HookStats) {
-        // ignore global hooks
-        if (!hook.parent || !this._allure.getCurrentSuite()) {
-            return false
-        }
+        const { disableMochaHooks } = this._options
 
-        // add beforeEach / afterEach hook as step to test
-        if (this._options.disableMochaHooks && isMochaEachHooks(hook.title)) {
-            if (this._allure.getCurrentTest()) {
-                this._allure.startStep(hook.title)
-            }
-            return
-        }
+        // ignore global hooks
+        if (!hook.parent || !this._suite) return
+
+        const mochaAllHook = isMochaAllHooks(hook.title)
+        const mochaEachHook = isMochaEachHooks(hook.title)
 
         // don't add hook as test to suite for mocha All hooks
-        if (this._options.disableMochaHooks && isMochaAllHooks(hook.title)) {
+        if (disableMochaHooks && mochaAllHook) return
+
+        // add beforeEach / afterEach hook as step to test
+        if (disableMochaHooks && mochaEachHook && this._test) {
+            this._step = this._test.startStep(hook.title)
             return
         }
 
@@ -510,48 +512,63 @@ class AllureReporter extends WDIOReporter {
     }
 
     onHookEnd(hook: HookStats) {
+        const { disableMochaHooks } = this._options
+
         // ignore global hooks
-        if (!hook.parent || !this._allure.getCurrentSuite() || (this._options.disableMochaHooks && !isMochaAllHooks(hook.title) && !this._allure.getCurrentTest())) {
-            return false
-        }
+        if (!hook.parent || !this._suite) return
+
+        const mochaAllHook = isMochaAllHooks(hook.title)
+        const mochaEachHook = isMochaEachHooks(hook.title)
+
+        if (!this._test && disableMochaHooks && !mochaAllHook) return
 
         // set beforeEach / afterEach hook (step) status
-        if (this._options.disableMochaHooks && isMochaEachHooks(hook.title)) {
+        if (disableMochaHooks && mochaEachHook) {
+            const currentStep = this._step!
+
             if (hook.error) {
-                this._allure.endStep('failed')
+                currentStep.status = Status.FAILED
+                currentStep.detailsMessage = hook.error.message
+                currentStep.detailsTrace = hook.error?.stack
             } else {
-                this._allure.endStep('passed')
+                currentStep.status = Status.PASSED
             }
+
+            currentStep.stage = Stage.FINISHED
+            currentStep.endStep()
+            this._step = undefined
             return
         }
 
         // set hook (test) status
         if (hook.error) {
-            if (this._options.disableMochaHooks && isMochaAllHooks(hook.title)) {
+            if (disableMochaHooks && mochaAllHook) {
                 this.onTestStart(hook)
-                this.attachScreenshot()
             }
+
             this.onTestFail(hook)
-        } else if (this._options.disableMochaHooks || this._options.useCucumberStepReporter) {
-            if (!isMochaAllHooks(hook.title)) {
-                this.onTestPass()
+            return
+        }
 
-                // remove hook from suite if it has no steps
-                if (this._allure.getCurrentTest().steps.length === 0 && !this._options.useCucumberStepReporter) {
-                    this._allure.getCurrentSuite().testcases.pop()
-                } else if (this._options.useCucumberStepReporter) {
-                    // remove hook when it's registered as a step and if it's passed
-                    const step = this._allure.getCurrentTest().steps.pop()
+        // TODO: new allure version doesn't allow direct access to the test steps
+        // if ((disableMochaHooks || useCucumberStepReporter) && !mochaAllHook) {
+        //     // remove hook from suite if it has no steps
+        //     // if (this._test.steps.length === 0 && !useCucumberStepReporter) {
+        //     //     this._suite.testcases.pop()
+        //     // } else if (this._options.useCucumberStepReporter) {
+        //     //     // remove hook when it's registered as a step and if it's passed
+        //     //     const step = this._test.steps.pop()
 
-                    // if it had any attachments, reattach them to current test
-                    if (step && step.attachments.length >= 1) {
-                        step.attachments.forEach((attachment: any) => {
-                            this._allure.getCurrentTest().addAttachment(attachment)
-                        })
-                    }
-                }
-            }
-        } else if (!this._options.disableMochaHooks) this.onTestPass()
+        //     //     // if it had any attachments, reattach them to current test
+        //     //     if (step && step.attachments.length >= 1) {
+        //     //         step.attachments.forEach((attachment: any) => {
+        //     //             this._test.addAttachment(attachment)
+        //     //         })
+        //     //     }
+        //     // }
+        // }
+
+        this.onTestPass(hook)
     }
 
     addLabel({

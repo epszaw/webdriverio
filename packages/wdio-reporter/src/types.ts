@@ -1,6 +1,6 @@
 export interface Tag {
-    name: string;
-    line: number;
+    name: string
+    line: number
 }
 
 export interface CommandArgs {
@@ -21,6 +21,7 @@ export interface BeforeCommandArgs extends CommandArgs {
 }
 
 export interface AfterCommandArgs extends CommandArgs {
+    body?: any
     result: any
 
     /**
